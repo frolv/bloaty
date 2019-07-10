@@ -827,7 +827,8 @@ void RollupOutput::PrettyPrint(const OutputOptions& options,
   }
 
   if (filtered > 0) {
-    *out << SiPrint(filtered, /*force_sign=*/false) << " filtered out\n";
+    *out << "Filtering enabled (source_filter); omitted"
+         << SiPrint(filtered, /*force_sign=*/false) << " of entries\n";
   }
 }
 
