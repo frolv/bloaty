@@ -413,6 +413,9 @@ class Rollup {
   void AddInternal(const std::vector<std::string>& names, size_t i,
                    uint64_t size, bool is_vmsize) {
     if (filter_regex_ != nullptr) {
+      // filter_regex_ is only set in the root rollup, which checks the full
+      // label hierarchy for a match to determine whether a region should be
+      // considered.
       bool any_matched = false;
 
       for (const auto& name : names) {
@@ -423,6 +426,7 @@ class Rollup {
       }
 
       if (!any_matched) {
+        // Ignore this region in the rollup and don't visit sub-rollups.
         if (is_vmsize) {
           CheckedAdd(&filtered_vm_total_, size);
         } else {
