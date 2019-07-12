@@ -72,6 +72,9 @@ message Options {
 
   // Regex with which to filter names in the data sources.
   optional string source_filter = 13;
+
+  // Capacities for labels within data sources.
+  repeated LabelCapacity label_capacity = 14;
 }
 
 // A custom data source allows users to create their own label space by
@@ -97,4 +100,13 @@ message CustomDataSource {
 message Regex {
   optional string pattern = 1;
   optional string replacement = 2;
+}
+
+// Domain size capacities for a label in a data source.  When provided, the
+// output will display sizes as a percentage of this capacity.  Useful for
+// binaries in which there is a limit to how much space can be used.
+message LabelCapacity {
+  optional string label = 1;
+  optional uint64 vm_capacity = 2;
+  optional uint64 file_capacity = 3;
 }

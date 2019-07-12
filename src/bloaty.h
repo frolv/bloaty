@@ -437,6 +437,8 @@ struct RollupRow {
   int64_t sortkey;
   double vmpercent;
   double filepercent;
+  int64_t vmcapacity = 0;
+  int64_t filecapacity = 0;
   std::vector<RollupRow> sorted_children;
 
   static bool Compare(const RollupRow& a, const RollupRow& b) {

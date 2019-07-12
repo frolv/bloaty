@@ -291,6 +291,16 @@ std::string NameMunger::Munge(string_view name) const {
   return name_str;
 }
 
+struct Label {
+  Label(const std::string& name) : name(name) {}
+  Label(const std::string& name, uint64_t vm_capacity, uint64_t file_capacity)
+      : name(name), vm_capacity(vm_capacity), file_capacity(file_capacity) {}
+
+  std::string name;
+  uint64_t vm_capacity = 0;
+  uint64_t file_capacity = 0;
+};
+
 
 // Rollup //////////////////////////////////////////////////////////////////////
 
@@ -321,14 +331,16 @@ std::string others_label = "[Other]";
 class Rollup {
  public:
   Rollup() {}
+  Rollup(uint64_t vm_capacity, uint64_t file_capacity)
+      : vm_capacity_(vm_capacity), file_capacity_(file_capacity) {}
 
   Rollup(Rollup&& other) = default;
   Rollup& operator=(Rollup&& other) = default;
 
-  void AddSizes(const std::vector<std::string>& names,
+  void AddSizes(const std::vector<Label>& labels,
                 uint64_t size, bool is_vmsize) {
     // We start at 1 to exclude the base map (see base_map_).
-    AddInternal(names, 1, size, is_vmsize);
+    AddInternal(labels, 1, size, is_vmsize);
   }
 
   // Prints a graphical representation of the rollup.
@@ -362,7 +374,8 @@ class Rollup {
     for (const auto& other_child : other.children_) {
       auto& child = children_[other_child.first];
       if (child.get() == NULL) {
-        child.reset(new Rollup());
+        child.reset(new Rollup(other_child.second->vm_capacity_,
+                               other_child.second->file_capacity_));
       }
       child->Subtract(*other_child.second);
     }
@@ -376,7 +389,8 @@ class Rollup {
     for (const auto& other_child : other.children_) {
       auto& child = children_[other_child.first];
       if (child.get() == NULL) {
-        child.reset(new Rollup());
+        child.reset(new Rollup(other_child.second->vm_capacity_,
+                               other_child.second->file_capacity_));
       }
       child->Add(*other_child.second);
     }
@@ -392,6 +406,11 @@ class Rollup {
   int64_t file_total_ = 0;
   int64_t filtered_vm_total_ = 0;
   int64_t filtered_file_total_ = 0;
+
+  // User-defined capacities for the region represented by the Rollup.
+  // Zero indicates that no capacity is specified.
+  int64_t vm_capacity_ = 0;
+  int64_t file_capacity_ = 0;
 
   const RE2* filter_regex_ = nullptr;
 
@@ -410,7 +429,7 @@ class Rollup {
 
   // Adds "size" bytes to the rollup under the label names[i].
   // If there are more entries names[i+1, i+2, etc] add them to sub-rollups.
-  void AddInternal(const std::vector<std::string>& names, size_t i,
+  void AddInternal(const std::vector<Label>& labels, size_t i,
                    uint64_t size, bool is_vmsize) {
     if (filter_regex_ != nullptr) {
       // filter_regex_ is only set in the root rollup, which checks the full
@@ -418,8 +437,8 @@ class Rollup {
       // considered.
       bool any_matched = false;
 
-      for (const auto& name : names) {
-        if (RE2::PartialMatch(name, *filter_regex_)) {
+      for (const auto& label : labels) {
+        if (RE2::PartialMatch(label.name, *filter_regex_)) {
           any_matched = true;
           break;
         }
@@ -442,12 +461,22 @@ class Rollup {
       CheckedAdd(&file_total_, size);
     }
 
-    if (i < names.size()) {
-      auto& child = children_[names[i]];
+    if (i < labels.size()) {
+      auto& child = children_[labels[i].name];
       if (child.get() == nullptr) {
-        child.reset(new Rollup());
+        // If there is a capacity defined for this label, use it.
+        // Otherwise, inherit the parent's capacity.
+        uint64_t child_vm = labels[i].vm_capacity;
+        uint64_t child_file = labels[i].file_capacity;
+        if (child_vm == 0) {
+          child_vm = vm_capacity_;
+        }
+        if (child_file == 0) {
+          child_file = file_capacity_;
+        }
+        child.reset(new Rollup(child_vm, child_file));
       }
-      child->AddInternal(names, i + 1, size, is_vmsize);
+      child->AddInternal(labels, i + 1, size, is_vmsize);
     }
   }
 
@@ -473,11 +502,26 @@ class Rollup {
 
 void Rollup::CreateRows(RollupRow* row, const Rollup* base,
                         const Options& options, bool is_toplevel) const {
+  row->vmcapacity = vm_capacity_;
+  row->filecapacity = file_capacity_;
+
+  // If a row has a capacity, percentages are calculated relative to it.
+  if (row->vmcapacity > 0) {
+    row->vmpercent = Percent(row->vmsize, row->vmcapacity);
+  }
+  if (row->filecapacity > 0) {
+    row->filepercent = Percent(row->filesize, row->filecapacity);
+  }
+
   if (base) {
     // For a diff, the percentage is a comparison against the previous size of
     // the same label at the same level.
-    row->vmpercent = Percent(vm_total_, base->vm_total_);
-    row->filepercent = Percent(file_total_, base->file_total_);
+    if (row->vmcapacity == 0) {
+      row->vmpercent = Percent(vm_total_, base->vm_total_);
+    }
+    if (row->filecapacity == 0) {
+      row->filepercent = Percent(file_total_, base->file_total_);
+    }
   }
 
   for (const auto& value : children_) {
@@ -539,8 +583,8 @@ void Rollup::SortAndAggregateRows(RollupRow* row, const Rollup* base,
   RollupRow others_row(others_label);
   others_row.other_count = child_rows.size() - options.max_rows_per_level();
   others_row.name = absl::Substitute("[$0 Others]", others_row.other_count);
-  Rollup others_rollup;
-  Rollup others_base;
+  Rollup others_rollup(vm_capacity_, file_capacity_);
+  Rollup others_base(vm_capacity_, file_capacity_);
 
   // Filter out everything but the top 'row_limit'.  Add rows that were filtered
   // out to "others_row".
@@ -592,8 +636,12 @@ void Rollup::SortAndAggregateRows(RollupRow* row, const Rollup* base,
   // For a non-diff, the percentage is compared to the total size of the parent.
   if (!base) {
     for (auto& child_row : child_rows) {
-      child_row.vmpercent = Percent(child_row.vmsize, row->vmsize);
-      child_row.filepercent = Percent(child_row.filesize, row->filesize);
+      if (row->vmcapacity == 0) {
+        child_row.vmpercent = Percent(child_row.vmsize, row->vmsize);
+      }
+      if (row->filecapacity == 0) {
+        child_row.filepercent = Percent(child_row.filesize, row->filesize);
+      }
     }
   }
 
@@ -746,11 +794,19 @@ void RollupOutput::PrettyPrintRow(const RollupRow& row, size_t indent,
   if (ShowFile(options)) {
     *out << PercentString(row.filepercent, diff_mode_) << " "
          << SiPrint(row.filesize, diff_mode_) << " ";
+
+    if (row.filecapacity) {
+      *out << "/" << SiPrint(row.filecapacity, false) << " ";
+    }
   }
 
   if (ShowVM(options)) {
     *out << PercentString(row.vmpercent, diff_mode_) << " "
          << SiPrint(row.vmsize, diff_mode_) << " ";
+
+    if (row.vmcapacity) {
+      *out << "/" << SiPrint(row.vmcapacity, false) << " ";
+    }
   }
 
   *out << "   " << row.name << "\n";
@@ -791,32 +847,14 @@ void RollupOutput::PrettyPrintTree(const RollupRow& row, size_t indent,
 
 void RollupOutput::PrettyPrint(const OutputOptions& options,
                                std::ostream* out) const {
-  if (ShowFile(options)) {
-    *out << "    FILE SIZE   ";
+  if (ShowFile(options) && ShowVM(options)) {
+    *out << "    FILE SIZE        VM SIZE    \n";
+    *out << " --------------  -------------- \n";
   }
-
-  if (ShowVM(options)) {
-    *out << "     VM SIZE    ";
-  }
-
-  *out << "\n";
-
-  if (ShowFile(options)) {
-    *out << " -------------- ";
-  }
-
-  if (ShowVM(options)) {
-    *out << " -------------- ";
-  }
-
-  *out << "\n";
 
   for (const auto& child : toplevel_row_.sorted_children) {
     PrettyPrintTree(child, 0, options, out);
   }
-
-  // The "TOTAL" row comes after all other rows.
-  PrettyPrintRow(toplevel_row_, 0, options, out);
 
   uint64_t filtered = 0;
   if (ShowFile(options)) {
@@ -827,7 +865,7 @@ void RollupOutput::PrettyPrint(const OutputOptions& options,
   }
 
   if (filtered > 0) {
-    *out << "Filtering enabled (source_filter); omitted"
+    *out << "\nFiltering enabled (source_filter); omitted"
          << SiPrint(filtered, /*force_sign=*/false) << " of entries\n";
   }
 }
@@ -1309,6 +1347,8 @@ class Bloaty {
   void DisassembleFunction(string_view function, const Options& options,
                            RollupOutput* output);
 
+  void AddLabelCapacity(const LabelCapacity& label_capacity);
+
  private:
   BLOATY_DISALLOW_COPY_AND_ASSIGN(Bloaty);
 
@@ -1362,6 +1402,9 @@ class Bloaty {
   std::vector<std::unique_ptr<ObjectFile>> input_files_;
   std::vector<std::unique_ptr<ObjectFile>> base_files_;
   std::map<std::string, std::unique_ptr<ObjectFile>> debug_files_;
+
+  // User-defined capacities for specific labels.
+  std::unordered_map<std::string, Label> label_capacities_;
 };
 
 Bloaty::Bloaty(const InputFileFactory& factory, const Options& options)
@@ -1448,6 +1491,13 @@ void Bloaty::AddDataSource(const std::string& name) {
   sources_.emplace_back(it->second.get());
 }
 
+void Bloaty::AddLabelCapacity(const LabelCapacity& lc) {
+  const auto& name = lc.label();
+  const auto& pair = std::make_pair(
+      name, Label(name, lc.vm_capacity(), lc.file_capacity()));
+  label_capacities_.emplace(pair);
+}
+
 // All of the DualMaps for a given file.
 struct DualMaps {
  public:
@@ -1461,15 +1511,18 @@ struct DualMaps {
     return maps_.back().get();
   }
 
-  void ComputeRollup(Rollup* rollup) {
+  void ComputeRollup(Rollup* rollup,
+                     const std::unordered_map<std::string, Label>& label_capacities) {
     RangeMap::ComputeRollup(VmMaps(), [=](const std::vector<std::string>& keys,
                                           uint64_t addr, uint64_t end) {
-      return rollup->AddSizes(keys, end - addr, true);
+      auto labels = CreateLabelsFromKeys(keys, label_capacities);
+      return rollup->AddSizes(labels, end - addr, true);
     });
     RangeMap::ComputeRollup(
         FileMaps(),
         [=](const std::vector<std::string>& keys, uint64_t addr, uint64_t end) {
-          return rollup->AddSizes(keys, end - addr, false);
+          auto labels = CreateLabelsFromKeys(keys, label_capacities);
+          return rollup->AddSizes(labels, end - addr, false);
         });
   }
 
@@ -1523,6 +1576,26 @@ struct DualMaps {
       ret.push_back(&map->file_map);
     }
     return ret;
+  }
+
+  // Builds a list of labels with capacities for the specified keys.
+  // Capacities are read from the map and default to 0.
+  std::vector<Label> CreateLabelsFromKeys(
+      const std::vector<std::string>& keys,
+      const std::unordered_map<std::string, Label>& capacities) const {
+    assert(keys.size() == maps_.size());
+    std::vector<Label> labels;
+
+    for (const auto& key : keys) {
+      const auto entry = capacities.find(key);
+      if (entry != capacities.end()) {
+        labels.push_back(entry->second);
+      } else {
+        labels.emplace_back(key);
+      }
+    }
+
+    return labels;
   }
 
   std::vector<std::unique_ptr<DualMap>> maps_;
@@ -1608,7 +1681,7 @@ void Bloaty::ScanAndRollupFile(ObjectFile* file, Rollup* rollup,
     }
   }
 
-  maps.ComputeRollup(rollup);
+  maps.ComputeRollup(rollup, label_capacities_);
 
   // The ObjectFile implementation must guarantee this.
   int64_t filesize = rollup->file_total() +
@@ -2080,6 +2153,10 @@ void BloatyDoMain(const Options& options, const InputFileFactory& file_factory,
 
   for (const auto& data_source : options.data_source()) {
     bloaty.AddDataSource(data_source);
+  }
+
+  for (const auto& label_capacity : options.label_capacity()) {
+    bloaty.AddLabelCapacity(label_capacity);
   }
 
   if (options.has_source_filter()) {
