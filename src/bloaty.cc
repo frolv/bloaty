@@ -1347,7 +1347,11 @@ class Bloaty {
   void DisassembleFunction(string_view function, const Options& options,
                            RollupOutput* output);
 
-  void AddLabelCapacity(const LabelCapacity& label_capacity);
+  void AddDataSourceCapacity(const DataSourceCapacity& ds_capacity);
+
+  // Map of data source names to label names to label capacities.
+  typedef std::unordered_map<std::string,
+          std::unordered_map<std::string, Label>> CapacityMap;
 
  private:
   BLOATY_DISALLOW_COPY_AND_ASSIGN(Bloaty);
@@ -1403,8 +1407,8 @@ class Bloaty {
   std::vector<std::unique_ptr<ObjectFile>> base_files_;
   std::map<std::string, std::unique_ptr<ObjectFile>> debug_files_;
 
-  // User-defined capacities for specific labels.
-  std::unordered_map<std::string, Label> label_capacities_;
+  // User-defined capacities for specific labels within data sources.
+  CapacityMap data_source_capacities_;
 };
 
 Bloaty::Bloaty(const InputFileFactory& factory, const Options& options)
@@ -1491,11 +1495,18 @@ void Bloaty::AddDataSource(const std::string& name) {
   sources_.emplace_back(it->second.get());
 }
 
-void Bloaty::AddLabelCapacity(const LabelCapacity& lc) {
-  const auto& name = lc.label();
-  const auto& pair = std::make_pair(
-      name, Label(name, lc.vm_capacity(), lc.file_capacity()));
-  label_capacities_.emplace(pair);
+void Bloaty::AddDataSourceCapacity(const DataSourceCapacity& ds_capacity) {
+  std::unordered_map<std::string, Label> label_capacities;
+
+  for (const auto& lc : ds_capacity.label_capacity()) {
+    const auto& name = lc.label();
+    const auto& pair = std::make_pair(
+        name, Label(name, lc.vm_capacity(), lc.file_capacity()));
+    label_capacities.emplace(pair);
+  }
+
+  data_source_capacities_.emplace(
+      std::make_pair(ds_capacity.data_source(), label_capacities));
 }
 
 // All of the DualMaps for a given file.
@@ -1503,16 +1514,17 @@ struct DualMaps {
  public:
   DualMaps() {
     // Base map.
-    AppendMap();
+    AppendMap("base");
   }
 
-  DualMap* AppendMap() {
+  DualMap* AppendMap(const std::string& data_source) {
     maps_.emplace_back(new DualMap);
+    data_sources_.push_back(data_source);
     return maps_.back().get();
   }
 
   void ComputeRollup(Rollup* rollup,
-                     const std::unordered_map<std::string, Label>& label_capacities) {
+                     const Bloaty::CapacityMap& label_capacities) {
     RangeMap::ComputeRollup(VmMaps(), [=](const std::vector<std::string>& keys,
                                           uint64_t addr, uint64_t end) {
       auto labels = CreateLabelsFromKeys(keys, label_capacities);
@@ -1582,14 +1594,22 @@ struct DualMaps {
   // Capacities are read from the map and default to 0.
   std::vector<Label> CreateLabelsFromKeys(
       const std::vector<std::string>& keys,
-      const std::unordered_map<std::string, Label>& capacities) const {
-    assert(keys.size() == maps_.size());
+      const Bloaty::CapacityMap& capacities) const {
+    assert(keys.size() == data_sources_.size());
     std::vector<Label> labels;
 
-    for (const auto& key : keys) {
-      const auto entry = capacities.find(key);
-      if (entry != capacities.end()) {
-        labels.push_back(entry->second);
+    for (int i = 0; i < keys.size(); ++i) {
+      const auto& key = keys[i];
+
+      const auto map_entry = capacities.find(data_sources_[i]);
+      if (map_entry == capacities.end()) {
+        labels.emplace_back(key);
+        continue;
+      }
+
+      const auto label_entry = map_entry->second.find(key);
+      if (label_entry != map_entry->second.end()) {
+        labels.push_back(label_entry->second);
       } else {
         labels.emplace_back(key);
       }
@@ -1599,6 +1619,7 @@ struct DualMaps {
   }
 
   std::vector<std::unique_ptr<DualMap>> maps_;
+  std::vector<std::string> data_sources_;
 };
 
 void Bloaty::ScanAndRollupFile(ObjectFile* file, Rollup* rollup,
@@ -1615,11 +1636,13 @@ void Bloaty::ScanAndRollupFile(ObjectFile* file, Rollup* rollup,
   sinks.back()->AddOutput(maps.base_map(), &empty_munger);
   sink_ptrs.push_back(sinks.back().get());
 
-  for (auto source : sources_) {
+  for (int i = 0; i < sources_.size(); ++i) {
+    auto source = sources_[i];
     sinks.push_back(absl::make_unique<RangeSink>(&file->file_data(), options_,
                                                  source->effective_source,
                                                  maps.base_map()));
-    sinks.back()->AddOutput(maps.AppendMap(), source->munger.get());
+    sinks.back()->AddOutput(maps.AppendMap(source_names_[i]),
+                            source->munger.get());
     // We handle the kInputFiles data source internally, without handing it off
     // to the file format implementation.  This seems slightly simpler, since
     // the file format has to deal with armembers too.
@@ -1681,7 +1704,7 @@ void Bloaty::ScanAndRollupFile(ObjectFile* file, Rollup* rollup,
     }
   }
 
-  maps.ComputeRollup(rollup, label_capacities_);
+  maps.ComputeRollup(rollup, data_source_capacities_);
 
   // The ObjectFile implementation must guarantee this.
   int64_t filesize = rollup->file_total() +
@@ -2155,8 +2178,8 @@ void BloatyDoMain(const Options& options, const InputFileFactory& file_factory,
     bloaty.AddDataSource(data_source);
   }
 
-  for (const auto& label_capacity : options.label_capacity()) {
-    bloaty.AddLabelCapacity(label_capacity);
+  for (const auto& data_source_capacity : options.data_source_capacity()) {
+    bloaty.AddDataSourceCapacity(data_source_capacity);
   }
 
   if (options.has_source_filter()) {
