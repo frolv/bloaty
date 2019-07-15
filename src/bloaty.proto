@@ -105,6 +105,17 @@ message Regex {
 // Domain size capacities for labels in a data source.  When provided, the
 // output will display sizes as a percentage of these capacities.  Useful
 // for binaries in which there is a limit to how much space can be used.
+//
+// For example, using `segments` as the base data source, a binary could
+// have labels `LOAD #0` and `LOAD #1` which correspond to FLASH and RAM,
+// respectively.  If a device has 64K of flash, a limit can be set via a
+// label_capacity within the data source to have Bloaty report how full
+// the segment is.
+//
+// label_capacity: {
+//   label: "LOAD #0"
+//   vm_capacity: 65536
+// }
 message DataSourceCapacity {
   // The name of the data source in which the labels are found.
   optional string data_source = 1;
@@ -115,7 +126,13 @@ message DataSourceCapacity {
 
 // Space capacities for a single label.
 message LabelCapacity {
+  // Exact name of the label.
+  // TODO(frolv): would it make sense for this to be a regex?
   optional string label = 1;
+
+  // Capacity in bytes in the VM domain.
   optional uint64 vm_capacity = 2;
+
+  // Capacity in bytes in the file domain.
   optional uint64 file_capacity = 3;
 }

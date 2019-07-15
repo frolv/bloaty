@@ -297,6 +297,8 @@ struct Label {
       : name(name), vm_capacity(vm_capacity), file_capacity(file_capacity) {}
 
   std::string name;
+
+  // Space capacities for this label in bytes. Zero indicates no limit.
   uint64_t vm_capacity = 0;
   uint64_t file_capacity = 0;
 };
@@ -333,6 +335,11 @@ class Rollup {
   Rollup() {}
   Rollup(uint64_t vm_capacity, uint64_t file_capacity)
       : vm_capacity_(vm_capacity), file_capacity_(file_capacity) {}
+
+  Rollup(uint64_t vm_capacity, uint64_t file_capacity, CapacityOrigin origin)
+      : vm_capacity_(vm_capacity),
+        file_capacity_(file_capacity),
+        capacity_origin_(origin) {}
 
   Rollup(Rollup&& other) = default;
   Rollup& operator=(Rollup&& other) = default;
@@ -375,7 +382,8 @@ class Rollup {
       auto& child = children_[other_child.first];
       if (child.get() == NULL) {
         child.reset(new Rollup(other_child.second->vm_capacity_,
-                               other_child.second->file_capacity_));
+                               other_child.second->file_capacity_,
+                               other_child.second->capacity_origin_));
       }
       child->Subtract(*other_child.second);
     }
@@ -390,7 +398,8 @@ class Rollup {
       auto& child = children_[other_child.first];
       if (child.get() == NULL) {
         child.reset(new Rollup(other_child.second->vm_capacity_,
-                               other_child.second->file_capacity_));
+                               other_child.second->file_capacity_,
+                               other_child.second->capacity_origin_));
       }
       child->Add(*other_child.second);
     }
@@ -411,6 +420,7 @@ class Rollup {
   // Zero indicates that no capacity is specified.
   int64_t vm_capacity_ = 0;
   int64_t file_capacity_ = 0;
+  CapacityOrigin capacity_origin_ = CapacityOrigin::kInherited;
 
   const RE2* filter_regex_ = nullptr;
 
@@ -468,13 +478,17 @@ class Rollup {
         // Otherwise, inherit the parent's capacity.
         uint64_t child_vm = labels[i].vm_capacity;
         uint64_t child_file = labels[i].file_capacity;
+        int origin = CapacityOrigin::kBothSet;
         if (child_vm == 0) {
           child_vm = vm_capacity_;
+          origin &= ~CapacityOrigin::kVMSet;
         }
         if (child_file == 0) {
           child_file = file_capacity_;
+          origin &= ~CapacityOrigin::kFileSet;
         }
-        child.reset(new Rollup(child_vm, child_file));
+        child.reset(new Rollup(child_vm, child_file,
+                               static_cast<CapacityOrigin>(origin)));
       }
       child->AddInternal(labels, i + 1, size, is_vmsize);
     }
@@ -504,6 +518,7 @@ void Rollup::CreateRows(RollupRow* row, const Rollup* base,
                         const Options& options, bool is_toplevel) const {
   row->vmcapacity = vm_capacity_;
   row->filecapacity = file_capacity_;
+  row->capacity_origin = capacity_origin_;
 
   // If a row has a capacity, percentages are calculated relative to it.
   if (row->vmcapacity > 0) {
@@ -796,7 +811,11 @@ void RollupOutput::PrettyPrintRow(const RollupRow& row, size_t indent,
          << SiPrint(row.filesize, diff_mode_) << " ";
 
     if (row.filecapacity) {
-      *out << "/" << SiPrint(row.filecapacity, false) << " ";
+      if (row.capacity_origin & CapacityOrigin::kFileSet) {
+        *out << "/" << SiPrint(row.filecapacity, false) << " ";
+      } else {
+        *out << LeftPad("", 9);
+      }
     }
   }
 
@@ -805,7 +824,11 @@ void RollupOutput::PrettyPrintRow(const RollupRow& row, size_t indent,
          << SiPrint(row.vmsize, diff_mode_) << " ";
 
     if (row.vmcapacity) {
-      *out << "/" << SiPrint(row.vmcapacity, false) << " ";
+      if (row.capacity_origin & CapacityOrigin::kVMSet) {
+        *out << "/" << SiPrint(row.vmcapacity, false) << " ";
+      } else {
+        *out << LeftPad("", 9);
+      }
     }
   }
 

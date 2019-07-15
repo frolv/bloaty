@@ -425,6 +425,14 @@ void DisassembleFindReferences(const DisassemblyInfo& info, RangeSink* sink);
 
 class Rollup;
 
+// Where a rollup's capacities come from.
+enum CapacityOrigin {
+  kInherited = 0,
+  kVMSet     = 1,
+  kFileSet   = 2,
+  kBothSet   = 3,
+};
+
 struct RollupRow {
   RollupRow(const std::string& name_) : name(name_) {}
 
@@ -439,6 +447,7 @@ struct RollupRow {
   double filepercent;
   int64_t vmcapacity = 0;
   int64_t filecapacity = 0;
+  CapacityOrigin capacity_origin = CapacityOrigin::kInherited;
   std::vector<RollupRow> sorted_children;
 
   static bool Compare(const RollupRow& a, const RollupRow& b) {
