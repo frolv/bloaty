@@ -359,10 +359,10 @@ class Rollup {
   void CreateDiffModeRollupOutput(Rollup* base, const Options& options,
                                   RollupOutput* output) const {
     RollupRow* row = &output->toplevel_row_;
-    row->vmsize = vm_total_;
-    row->filesize = file_total_;
-    row->filtered_vmsize = filtered_vm_total_;
-    row->filtered_filesize = filtered_file_total_;
+    row->size.vm = vm_total_;
+    row->size.file = file_total_;
+    row->filtered_size.vm = filtered_vm_total_;
+    row->filtered_size.file = filtered_file_total_;
     row->vmpercent = 100;
     row->filepercent = 100;
     output->diff_mode_ = true;
@@ -516,35 +516,61 @@ class Rollup {
 
 void Rollup::CreateRows(RollupRow* row, const Rollup* base,
                         const Options& options, bool is_toplevel) const {
-  row->vmcapacity = vm_capacity_;
-  row->filecapacity = file_capacity_;
+  row->capacity.vm = vm_capacity_;
+  row->capacity.file = file_capacity_;
   row->capacity_origin = capacity_origin_;
 
   // If a row has a capacity, percentages are calculated relative to it.
-  if (row->vmcapacity > 0) {
-    row->vmpercent = Percent(row->vmsize, row->vmcapacity);
+  if (row->capacity.vm > 0) {
+    row->vmpercent = Percent(row->size.vm, row->capacity.vm);
   }
-  if (row->filecapacity > 0) {
-    row->filepercent = Percent(row->filesize, row->filecapacity);
+  if (row->capacity.file > 0) {
+    row->filepercent = Percent(row->size.file, row->capacity.file);
   }
 
   if (base) {
     // For a diff, the percentage is a comparison against the previous size of
     // the same label at the same level.
-    if (row->vmcapacity == 0) {
+    if (row->capacity.vm == 0) {
       row->vmpercent = Percent(vm_total_, base->vm_total_);
     }
-    if (row->filecapacity == 0) {
+    if (row->capacity.file == 0) {
       row->filepercent = Percent(file_total_, base->file_total_);
     }
   }
 
   for (const auto& value : children_) {
-    if (value.second->vm_total_ != 0 || value.second->file_total_ != 0) {
+    int64_t vm_total = value.second->vm_total_;
+    int64_t file_total = value.second->file_total_;
+    Rollup* base_child = nullptr;
+
+    if (base) {
+      // Perform the diff mode subtraction.
+      auto it = base->children_.find(value.first);
+      if (it != base->children_.end()) {
+        base_child = it->second.get();
+        vm_total -= base_child->vm_total_;
+        file_total -= base_child->file_total_;
+      }
+    }
+
+    if (vm_total != 0 || file_total != 0) {
       row->sorted_children.emplace_back(value.first);
       RollupRow& child_row = row->sorted_children.back();
-      child_row.vmsize = value.second->vm_total_;
-      child_row.filesize = value.second->file_total_;
+      child_row.size.vm = vm_total;
+      child_row.size.file = file_total;
+
+      if (base_child) {
+        child_row.original_size.vm = base_child->vm_total_;
+        child_row.original_size.file = base_child->file_total_;
+        child_row.current_size.vm = value.second->vm_total_;
+        child_row.current_size.file = value.second->file_total_;
+      } else {
+        child_row.original_size.vm = child_row.size.vm;
+        child_row.original_size.file = child_row.size.file;
+        child_row.current_size.vm = child_row.size.vm;
+        child_row.current_size.file = child_row.size.file;
+      }
     }
   }
 
@@ -579,14 +605,14 @@ void Rollup::SortAndAggregateRows(RollupRow* row, const Rollup* base,
   for (auto& child : child_rows) {
     switch (options.sort_by()) {
       case Options::SORTBY_VMSIZE:
-        child.sortkey = std::abs(child.vmsize);
+        child.sortkey = std::abs(child.size.vm);
         break;
       case Options::SORTBY_FILESIZE:
-        child.sortkey = std::abs(child.filesize);
+        child.sortkey = std::abs(child.size.file);
         break;
       case Options::SORTBY_BOTH:
         child.sortkey =
-            std::max(std::abs(child.vmsize), std::abs(child.filesize));
+            std::max(std::abs(child.size.vm), std::abs(child.size.file));
         break;
       default:
         BLOATY_UNREACHABLE();
@@ -605,8 +631,14 @@ void Rollup::SortAndAggregateRows(RollupRow* row, const Rollup* base,
   // out to "others_row".
   size_t i = child_rows.size() - 1;
   while (i >= options.max_rows_per_level()) {
-    CheckedAdd(&others_row.vmsize, child_rows[i].vmsize);
-    CheckedAdd(&others_row.filesize, child_rows[i].filesize);
+    CheckedAdd(&others_row.size.vm, child_rows[i].size.vm);
+    CheckedAdd(&others_row.size.file, child_rows[i].size.file);
+
+    CheckedAdd(&others_row.current_size.vm, child_rows[i].current_size.vm);
+    CheckedAdd(&others_row.current_size.file, child_rows[i].current_size.file);
+    CheckedAdd(&others_row.original_size.vm, child_rows[i].original_size.vm);
+    CheckedAdd(&others_row.original_size.file, child_rows[i].original_size.file);
+
     if (base) {
       auto it = base->children_.find(child_rows[i].name);
       if (it != base->children_.end()) {
@@ -619,26 +651,26 @@ void Rollup::SortAndAggregateRows(RollupRow* row, const Rollup* base,
     i--;
   }
 
-  if (std::abs(others_row.vmsize) > 0 || std::abs(others_row.filesize) > 0) {
+  if (std::abs(others_row.size.vm) > 0 || std::abs(others_row.size.file) > 0) {
     child_rows.push_back(others_row);
-    CheckedAdd(&others_rollup.vm_total_, others_row.vmsize);
-    CheckedAdd(&others_rollup.file_total_, others_row.filesize);
+    CheckedAdd(&others_rollup.vm_total_, others_row.size.vm);
+    CheckedAdd(&others_rollup.file_total_, others_row.size.file);
   }
 
   // Now sort by actual value (positive or negative).
   for (auto& child : child_rows) {
     switch (options.sort_by()) {
       case Options::SORTBY_VMSIZE:
-        child.sortkey = child.vmsize;
+        child.sortkey = child.size.vm;
         break;
       case Options::SORTBY_FILESIZE:
-        child.sortkey = child.filesize;
+        child.sortkey = child.size.file;
         break;
       case Options::SORTBY_BOTH:
-        if (std::abs(child.vmsize) > std::abs(child.filesize)) {
-          child.sortkey = child.vmsize;
+        if (std::abs(child.size.vm) > std::abs(child.size.file)) {
+          child.sortkey = child.size.vm;
         } else {
-          child.sortkey = child.filesize;
+          child.sortkey = child.size.file;
         }
         break;
       default:
@@ -651,11 +683,11 @@ void Rollup::SortAndAggregateRows(RollupRow* row, const Rollup* base,
   // For a non-diff, the percentage is compared to the total size of the parent.
   if (!base) {
     for (auto& child_row : child_rows) {
-      if (row->vmcapacity == 0) {
-        child_row.vmpercent = Percent(child_row.vmsize, row->vmsize);
+      if (row->capacity.vm == 0) {
+        child_row.vmpercent = Percent(child_row.size.vm, row->size.vm);
       }
-      if (row->filecapacity == 0) {
-        child_row.filepercent = Percent(child_row.filesize, row->filesize);
+      if (row->capacity.file == 0) {
+        child_row.filepercent = Percent(child_row.size.file, row->size.file);
       }
     }
   }
@@ -808,11 +840,11 @@ void RollupOutput::PrettyPrintRow(const RollupRow& row, size_t indent,
 
   if (ShowFile(options)) {
     *out << PercentString(row.filepercent, diff_mode_) << " "
-         << SiPrint(row.filesize, diff_mode_) << " ";
+         << SiPrint(row.size.file, diff_mode_) << " ";
 
-    if (row.filecapacity) {
+    if (row.capacity.file) {
       if (row.capacity_origin & CapacityOrigin::kFileSet) {
-        *out << "/" << SiPrint(row.filecapacity, false) << " ";
+        *out << "/" << SiPrint(row.capacity.file, false) << " ";
       } else {
         *out << LeftPad("", 9);
       }
@@ -821,11 +853,11 @@ void RollupOutput::PrettyPrintRow(const RollupRow& row, size_t indent,
 
   if (ShowVM(options)) {
     *out << PercentString(row.vmpercent, diff_mode_) << " "
-         << SiPrint(row.vmsize, diff_mode_) << " ";
+         << SiPrint(row.size.vm, diff_mode_) << " ";
 
-    if (row.vmcapacity) {
+    if (row.capacity.vm) {
       if (row.capacity_origin & CapacityOrigin::kVMSet) {
-        *out << "/" << SiPrint(row.vmcapacity, false) << " ";
+        *out << "/" << SiPrint(row.capacity.vm, false) << " ";
       } else {
         *out << LeftPad("", 9);
       }
@@ -853,7 +885,7 @@ void RollupOutput::PrettyPrintTree(const RollupRow& row, size_t indent,
   // Rows are printed before their sub-rows.
   PrettyPrintRow(row, indent, options, out);
 
-  if (!row.vmsize && !row.filesize) {
+  if (!row.size.vm && !row.size.file) {
     return;
   }
 
@@ -881,10 +913,10 @@ void RollupOutput::PrettyPrint(const OutputOptions& options,
 
   uint64_t filtered = 0;
   if (ShowFile(options)) {
-    filtered += toplevel_row_.filtered_filesize;
+    filtered += toplevel_row_.filtered_size.file;
   }
   if (ShowVM(options)) {
-    filtered += toplevel_row_.filtered_vmsize;
+    filtered += toplevel_row_.filtered_size.vm;
   }
 
   if (filtered > 0) {
@@ -901,8 +933,14 @@ void RollupOutput::PrintRowToCSV(const RollupRow& row,
     parent_labels.push_back("");
   }
 
-  parent_labels.push_back(std::to_string(row.vmsize));
-  parent_labels.push_back(std::to_string(row.filesize));
+  parent_labels.push_back(std::to_string(row.size.vm));
+  parent_labels.push_back(std::to_string(row.size.file));
+  parent_labels.push_back(std::to_string(row.capacity.vm));
+  parent_labels.push_back(std::to_string(row.capacity.file));
+  parent_labels.push_back(std::to_string(row.original_size.vm));
+  parent_labels.push_back(std::to_string(row.original_size.file));
+  parent_labels.push_back(std::to_string(row.current_size.vm));
+  parent_labels.push_back(std::to_string(row.current_size.file));
 
   std::string sep = tabs ? "\t" : ",";
   *out << absl::StrJoin(parent_labels, sep) << "\n";
@@ -925,6 +963,12 @@ void RollupOutput::PrintToCSV(std::ostream* out, bool tabs) const {
   std::vector<std::string> names(source_names_);
   names.push_back("vmsize");
   names.push_back("filesize");
+  names.push_back("vmcapacity");
+  names.push_back("filecapacity");
+  names.push_back("original_vmsize");
+  names.push_back("original_filesize");
+  names.push_back("current_vmsize");
+  names.push_back("current_filesize");
   std::string sep = tabs ? "\t" : ",";
   *out << absl::StrJoin(names, sep) << "\n";
   for (const auto& child_row : toplevel_row_.sorted_children) {
@@ -1815,7 +1859,6 @@ void Bloaty::ScanAndRollup(const Options& options, RollupOutput* output) {
   if (!base_files_.empty()) {
     Rollup base;
     ScanAndRollupFiles(base_files_, &build_ids, &base);
-    rollup.Subtract(base);
     rollup.CreateDiffModeRollupOutput(&base, options, output);
   } else {
     rollup.CreateRollupOutput(options, output);

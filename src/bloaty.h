@@ -433,20 +433,24 @@ enum CapacityOrigin {
   kBothSet   = 3,
 };
 
+struct DomainSizes {
+  int64_t vm;
+  int64_t file;
+};
+
 struct RollupRow {
   RollupRow(const std::string& name_) : name(name_) {}
 
   std::string name;
-  int64_t vmsize = 0;
-  int64_t filesize = 0;
-  int64_t filtered_vmsize = 0;
-  int64_t filtered_filesize = 0;
+  DomainSizes size = {0, 0};
+  DomainSizes filtered_size = {0, 0};
   int64_t other_count = 0;
   int64_t sortkey;
   double vmpercent;
   double filepercent;
-  int64_t vmcapacity = 0;
-  int64_t filecapacity = 0;
+  DomainSizes capacity = {0, 0};
+  DomainSizes original_size = {0, 0};
+  DomainSizes current_size = {0, 0};
   CapacityOrigin capacity_origin = CapacityOrigin::kInherited;
   std::vector<RollupRow> sorted_children;
 
