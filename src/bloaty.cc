@@ -560,16 +560,20 @@ void Rollup::CreateRows(RollupRow* row, const Rollup* base,
       child_row.size.vm = vm_total;
       child_row.size.file = file_total;
 
+      // Preserve the old and new sizes for this label in the RollupRow output.
+      // If there is a diff base, the old sizes come from the size of the label
+      // in that base.  Otherwise, the old size is the same as the new (current)
+      // size.
       if (base_child) {
-        child_row.original_size.vm = base_child->vm_total_;
-        child_row.original_size.file = base_child->file_total_;
-        child_row.current_size.vm = value.second->vm_total_;
-        child_row.current_size.file = value.second->file_total_;
+        child_row.old_size.vm = base_child->vm_total_;
+        child_row.old_size.file = base_child->file_total_;
+        child_row.new_size.vm = value.second->vm_total_;
+        child_row.new_size.file = value.second->file_total_;
       } else {
-        child_row.original_size.vm = child_row.size.vm;
-        child_row.original_size.file = child_row.size.file;
-        child_row.current_size.vm = child_row.size.vm;
-        child_row.current_size.file = child_row.size.file;
+        child_row.old_size.vm = child_row.size.vm;
+        child_row.old_size.file = child_row.size.file;
+        child_row.new_size.vm = child_row.size.vm;
+        child_row.new_size.file = child_row.size.file;
       }
     }
   }
@@ -634,10 +638,10 @@ void Rollup::SortAndAggregateRows(RollupRow* row, const Rollup* base,
     CheckedAdd(&others_row.size.vm, child_rows[i].size.vm);
     CheckedAdd(&others_row.size.file, child_rows[i].size.file);
 
-    CheckedAdd(&others_row.current_size.vm, child_rows[i].current_size.vm);
-    CheckedAdd(&others_row.current_size.file, child_rows[i].current_size.file);
-    CheckedAdd(&others_row.original_size.vm, child_rows[i].original_size.vm);
-    CheckedAdd(&others_row.original_size.file, child_rows[i].original_size.file);
+    CheckedAdd(&others_row.new_size.vm, child_rows[i].new_size.vm);
+    CheckedAdd(&others_row.new_size.file, child_rows[i].new_size.file);
+    CheckedAdd(&others_row.old_size.vm, child_rows[i].old_size.vm);
+    CheckedAdd(&others_row.old_size.file, child_rows[i].old_size.file);
 
     if (base) {
       auto it = base->children_.find(child_rows[i].name);
@@ -937,10 +941,10 @@ void RollupOutput::PrintRowToCSV(const RollupRow& row,
   parent_labels.push_back(std::to_string(row.size.file));
   parent_labels.push_back(std::to_string(row.capacity.vm));
   parent_labels.push_back(std::to_string(row.capacity.file));
-  parent_labels.push_back(std::to_string(row.original_size.vm));
-  parent_labels.push_back(std::to_string(row.original_size.file));
-  parent_labels.push_back(std::to_string(row.current_size.vm));
-  parent_labels.push_back(std::to_string(row.current_size.file));
+  parent_labels.push_back(std::to_string(row.old_size.vm));
+  parent_labels.push_back(std::to_string(row.old_size.file));
+  parent_labels.push_back(std::to_string(row.new_size.vm));
+  parent_labels.push_back(std::to_string(row.new_size.file));
 
   std::string sep = tabs ? "\t" : ",";
   *out << absl::StrJoin(parent_labels, sep) << "\n";

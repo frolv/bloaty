@@ -449,8 +449,11 @@ struct RollupRow {
   double vmpercent;
   double filepercent;
   DomainSizes capacity = {0, 0};
-  DomainSizes original_size = {0, 0};
-  DomainSizes current_size = {0, 0};
+  // The size of this row in a diff base.  Same as `size` for non-diff.
+  DomainSizes old_size = {0, 0};
+  // The current size of this row (this is not the same as `size` in the case
+  // of a diff -- `size` is the delta).
+  DomainSizes new_size = {0, 0};
   CapacityOrigin capacity_origin = CapacityOrigin::kInherited;
   std::vector<RollupRow> sorted_children;
 
