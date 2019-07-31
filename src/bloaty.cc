@@ -389,7 +389,7 @@ class Rollup {
     }
   }
 
-  // Add the values in "other" from this.
+  // Add the values in "other" to this.
   void Add(const Rollup& other) {
     vm_total_ += other.vm_total_;
     file_total_ += other.file_total_;
@@ -402,6 +402,19 @@ class Rollup {
                                other_child.second->capacity_origin_));
       }
       child->Add(*other_child.second);
+    }
+  }
+
+  // Create entries for all children which exist in "other" but not in this.
+  void AddEntriesFrom(const Rollup& other) {
+    for (const auto& other_child : other.children_) {
+      auto& child = children_[other_child.first];
+      if (child.get() == NULL) {
+        child.reset(new Rollup(other_child.second->vm_capacity_,
+                               other_child.second->file_capacity_,
+                               other_child.second->capacity_origin_));
+      }
+      child->AddEntriesFrom(*other_child.second);
     }
   }
 
@@ -1863,6 +1876,7 @@ void Bloaty::ScanAndRollup(const Options& options, RollupOutput* output) {
   if (!base_files_.empty()) {
     Rollup base;
     ScanAndRollupFiles(base_files_, &build_ids, &base);
+    rollup.AddEntriesFrom(base);
     rollup.CreateDiffModeRollupOutput(&base, options, output);
   } else {
     rollup.CreateRollupOutput(options, output);
